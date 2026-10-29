@@ -8,7 +8,9 @@ import torch
 from matplotlib.lines import Line2D
 
 from .data import STATE_DIM
-from .diffusion_model import DEVICE
+from .model_2D import DEVICE
+
+CHAIN_PERIOD = 32.0
 
 
 LOG_FIELDS = ["timestamp",
@@ -32,10 +34,14 @@ def potential(
     potential_type="double-well",
     barrier_amplitude=0.0,
     barrier_width=0.25,
+    period=CHAIN_PERIOD,
 ):
     if potential_type == "chain":
-        centers = (4.0 * np.arange(8)[:, None] + np.array([-1.0, 1.0])).ravel()
-        dx = (np.asarray(x)[..., None] - centers + 16.0) % 32.0 - 16.0
+        centers = (
+            period / 8 * np.arange(8)[:, None] + np.array([-1.0, 1.0])
+        ).ravel()
+        half_period = period / 2
+        dx = (np.asarray(x)[..., None] - centers + half_period) % period - half_period
         dy = np.asarray(y)[..., None]
         wells = 3.0 * np.exp(-0.5 * ((dx / 0.5) ** 2 + (dy / 0.5) ** 2))
         return -np.sum(wells, axis=-1) + 0.1 * np.asarray(y) ** 2
@@ -51,38 +57,38 @@ def potential(
     return -(g1 + g2) + 0.1 * (x**2 + y**2) + ridge
 
 #diffusion model predictions
+#generating *equilibrium samples* with annealed (discrete steps) Langevin dynamics
 def sample_score(model, mean, std, n_samples=1_000, n_levels=12, steps_per_level=50):
-    """Generate equilibrium samples with annealed Langevin dynamics."""
     model.eval()
-    state = torch.randn(n_samples, STATE_DIM, device=DEVICE)
+    X = torch.randn(n_samples, STATE_DIM, device=DEVICE)
+    #this sigma sampling is the same as in training but reversed: from high noise to low noise
     sigmas = torch.exp(torch.linspace(np.log(1.0), np.log(0.02), n_levels, device=DEVICE))
     
     with torch.no_grad():
-        
         for sigma in sigmas:
             sigma_batch = torch.full((n_samples,), sigma, device=DEVICE)
             step_size = 0.02 * sigma**2
             
             for _ in range(steps_per_level):
-                state = state + step_size * model(state, sigma_batch)
-                state = state + torch.sqrt(2 * step_size) * torch.randn_like(state)
+                # Euler-Maruyama Langevin step: score drift plus Gaussian noise
+                X = X + step_size * model(X, sigma_batch)
+                X = X + torch.sqrt(2 * step_size) * torch.randn_like(X)
     
-    
-    return state.cpu().numpy() * std.cpu().numpy() + mean.cpu().numpy()
+    return X.cpu().numpy() * std.cpu().numpy() + mean.cpu().numpy()
 
 #flow model predictions
 def sample_flow(model, mean, std, n_samples=1_000, ode_steps=50):
     """Generate samples by integrating the learned flow from noise to data."""
     model.eval()
-    state = torch.randn(n_samples, STATE_DIM, device=DEVICE)
+    X = torch.randn(n_samples, STATE_DIM, device=DEVICE)
     step_size = 1.0 / ode_steps
 
     with torch.no_grad():
         for step in range(ode_steps):
-            time = torch.full((n_samples,), step / ode_steps, device=DEVICE)
-            state = state + step_size * model(state, time)
+            tau = torch.full((n_samples,), step / ode_steps, device=DEVICE)
+            X = X + step_size * model(X, tau)
 
-    return state.cpu().numpy() * std.cpu().numpy() + mean.cpu().numpy()
+    return X.cpu().numpy() * std.cpu().numpy() + mean.cpu().numpy()
 
 
 #stats/measures: ål: I'm not sure about this diffusion coefficient calculation
@@ -102,6 +108,7 @@ def calculate_kramers_rate(
     potential_type="double-well",
     barrier_amplitude=0.0,
     barrier_width=0.25,
+    period=CHAIN_PERIOD,
 ):
     """Estimate the underdamped barrier-crossing rate for this potential."""
     dx = 1e-4
@@ -109,6 +116,7 @@ def calculate_kramers_rate(
         x, 0.0, potential_type,
         barrier_amplitude=barrier_amplitude,
         barrier_width=barrier_width,
+        period=period,
     )
     well_x = -1.0
     for _ in range(20):
@@ -328,6 +336,7 @@ def plot_results(
     barrier_amplitude=0.0,
     barrier_width=0.25,
     show=False,
+    period=CHAIN_PERIOD,
 ):
     if model_type not in {"diffusion", "flow"}:
         raise ValueError(f"Unsupported model type for plotting: {model_type}")
@@ -335,7 +344,7 @@ def plot_results(
         raise ValueError(f"Unsupported potential type for plotting: {potential_type}")
     model_label = model_type.title()
     plot_samples = true_samples[::max(1, len(true_samples) // 200_000)]
-    x_min, x_max = (0.0, 32.0) if potential_type == "chain" else (-3.5, 3.5)
+    x_min, x_max = (0.0, period) if potential_type == "chain" else (-3.5, 3.5)
 
     fig, axes = plt.subplots(2, 2, figsize=(12, 8), dpi=160)
     x = np.linspace(x_min, x_max, 400 if potential_type == "chain" else 200)
@@ -346,7 +355,7 @@ def plot_results(
         Y,
         potential(
             X, Y, potential_type, barrier_amplitude=barrier_amplitude,
-            barrier_width=barrier_width,
+            barrier_width=barrier_width, period=period,
         ),
         levels=12,
         cmap="Greys",
@@ -389,6 +398,7 @@ def plot_results(
         potential(
             plot_samples[:, 0], plot_samples[:, 1], potential_type,
             barrier_amplitude=barrier_amplitude, barrier_width=barrier_width,
+            period=period,
         ),
         bins=40,
         density=True,
@@ -399,6 +409,7 @@ def plot_results(
         potential(
             generated[:, 0], generated[:, 1], potential_type,
             barrier_amplitude=barrier_amplitude, barrier_width=barrier_width,
+            period=period,
         ),
         bins=40,
         density=True,
@@ -437,6 +448,7 @@ def plot_results(
         potential(
             x_line, 0.0, potential_type,
             barrier_amplitude=barrier_amplitude, barrier_width=barrier_width,
+            period=period,
         ),
         color="black", lw=2, linestyle="--", label="V(x,0)",
     )

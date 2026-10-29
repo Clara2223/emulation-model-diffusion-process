@@ -14,6 +14,11 @@ timestamp,png,model_version,einstein_diffusion,kramers_barrier_height,kramers_tr
 2026-10-08T21:08:02,xy_flow_20261008_210801.png,xy_flow_v1,0.00054518,2.08899469,0.00254589,,,,,,cpu
 2026-10-09T09:55:57,xy_diffusion_20261009_0955.png,xy_diffusion_v1,0.00008842,2.08899469,0.00254589,,,,,,cpu
 2026-10-09T09:58:43,xy_diffusion_20261009_0958.png,xy_diffusion_v1,0.00008842,2.08899469,0.00254589,,,,,,cpu
+timestamp,png,model_version,einstein_diffusion,kramers_barrier_height,kramers_transition_rate,device,,,,,
+2026-10-09T14:42:50,xy_diffusion_20261009_1442.png,xy_diffusion_v1,0.00008842,2.08899469,0.00254589,cpu,,,,,
+2026-10-09T14:45:17,xy_diffusion_20261009_1445.png,xy_diffusion_v1,0.00008842,2.08899469,0.00254589,cpu,,,,,
+2026-10-09T14:47:38,xy_diffusion_20261009_1447.png,xy_diffusion_v1,0.00008842,2.08899469,0.00254589,cpu,,,,,
+2026-10-09T14:49:56,xy_diffusion_20261009_1449.png,xy_diffusion_v1,0.00008842,2.08899469,0.00254589,cpu,,,,,
 2026-10-19T19:44:48,2D_double_well_1e8steps_5e4burn_20261009_1429_diffusion_20epochs_50000samples_20261019_194445_samples.png,xy_diffusion_v1,0.00008842,2.08899469,0.00254589,,,,,,cpu
 2026-10-19T19:45:58,2D_double_well_1e8steps_5e4burn_20261009_1429_diffusion_100epochs_50000samples_20261019_194555_samples.png,xy_diffusion_v1,0.00008842,2.08899469,0.00254589,,,,,,cpu
 2026-10-19T19:48:40,2D_double_well_1e8steps_5e4burn_20261009_1429_diffusion_1000epochs_50000samples_20261019_194838_samples.png,xy_diffusion_v1,0.00008842,2.08899469,0.00254589,,,,,,cpu
@@ -39,3 +44,10 @@ timestamp,png,model_version,einstein_diffusion,kramers_barrier_height,kramers_tr
 2026-10-22T08:52:15,3D_chain_1e8steps_5e4burn_20261021_2133_diffusion_100epochs_500000samples_12NoiseLevels_50StepsPerNoiseLevel_20261022_085214_samples.png,xy_diffusion_v1,0.04167221,2.19000098,0.00195966,noise_levels=12;steps_per_level=50,0.09284561,0.20055182,,,cpu
 2026-10-22T08:57:19,3D_chain_1e8steps_5e4burn_20261021_2133_diffusion_100epochs_1000000samples_12NoiseLevels_50StepsPerNoiseLevel_20261022_085718_samples.png,xy_diffusion_v1,0.04167221,2.19000098,0.00195966,noise_levels=12;steps_per_level=50,0.14460427,0.25923066,,,cpu
 2026-10-22T09:05:42,3D_chain_1e8steps_5e4burn_20261021_2133_diffusion_200epochs_1000000samples_12NoiseLevels_50StepsPerNoiseLevel_20261022_090541_samples.png,xy_diffusion_v1,0.04167221,2.19000098,0.00195966,noise_levels=12;steps_per_level=50,0.08199612,0.19172028,,,cpu
+2026-10-22T09:34:54,3D_chain_1e8steps_5e4burn_20261021_2133_diffusion_300epochs_1000000samples_12NoiseLevels_50StepsPerNoiseLevel_20261022_093453_samples.png,xy_diffusion_v1,0.04167221,2.19000098,0.00195966,noise_levels=12;steps_per_level=50,0.16889381,0.29167263,,,cpu
+2026-10-22T10:12:19,3D_chain_1e8steps_5e4burn_20261021_2133_diffusion_600epochs_1000000samples_12NoiseLevels_50StepsPerNoiseLevel_20261022_101218_samples.png,xy_diffusion_v1,0.04167221,2.19000098,0.00195966,noise_levels=12;steps_per_level=50,0.10509916,0.21071711,,,cpu
+2026-10-24T18:12:48,3D_chain_1e8steps_5e4burn_20261021_2133_diffusion_600epochs_500000samples_12NoiseLevels_50StepsPerNoiseLevel_20261024_181247_samples.png,xy_v1_diffusion_fractional_x_v1,0.04167221,2.19000098,0.00195966,noise_levels=12;steps_per_level=50;fractional_x_period=32,0.08655724,0.20603564,,,cpu
+2026-10-24T18:35:04,3D_chain_1e8steps_5e4burn_20261021_2133_diffusion_1000epochs_500000samples_12NoiseLevels_50StepsPerNoiseLevel_20261024_183504_samples.png,xy_v1_diffusion_fractional_x_v1,0.04167221,2.19000098,0.00195966,noise_levels=12;steps_per_level=50;fractional_x_period=32,0.06751462,0.18710949,,,cpu
+2026-10-24T21:07:38,3D_chain_1e8steps_5e4burn_20261021_2133_diffusion_1000epochs_1000000samples_20NoiseLevels_100StepsPerNoiseLevel_20261024_210737_samples.png,xy_v1_diffusion_fractional_x_v1,0.04167221,2.19000098,0.00195966,noise_levels=20;steps_per_level=100;fractional_x_period=32,0.06746346,0.18568276,,,cpu
+2026-10-24T23:30:28,3D_chain_1e8steps_5e4burn_20261021_2133_diffusion_1500epochs_1000000samples_20NoiseLevels_100StepsPerNoiseLevel_20261024_222604_samples.png,xy_v1_diffusion_fractional_x_v1,0.04167221,2.19000098,0.00195966,noise_levels=20;steps_per_level=100;fractional_x_period=32,0.07110259,0.19665712,,,cpu
+2026-10-29T13:58:14,3D_chain_1e8steps_5e4burn_20261021_2133_diffusion_4000epochs_1000000samples_20NoiseLevels_100StepsPerNoiseLevel_20261029_122140_samples.png,xy_v1_diffusion_fractional_x_v1,0.04167221,2.19000098,0.00195966,noise_levels=20;steps_per_level=100;fractional_x_period=32,0.07520706,0.20330513,,,cpu

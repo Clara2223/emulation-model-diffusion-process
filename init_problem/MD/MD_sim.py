@@ -71,8 +71,12 @@ def estimate_hbarrier_amplitude(
             _, gradient, curvature, _ = values(well_x, ridge_amplitude)
             if curvature <= 0:
                 raise ValueError("The proposed ridge removes the left-well minimum")
+            
+            
+            
             step = gradient / curvature
             well_x -= step
+            
             if abs(step) < 1e-12:
                 break
         else:
@@ -88,6 +92,7 @@ def estimate_hbarrier_amplitude(
             raise ValueError("The added ridge does not produce a first-order saddle")
 
         barrier = saddle_energy - well_energy
+        
         prefactor = (
             np.sqrt(well_x_curvature / mass)
             * np.sqrt(well_y_curvature / mass)
