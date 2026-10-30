@@ -130,9 +130,9 @@ def main():
     validation_data = train_data[permutation[:validation_size]]
     mean = training_data.mean(dim=0).to(DEVICE)
     std = training_data.std(dim=0).clamp_min(1e-6).to(DEVICE)
-    train_loader = DataLoader(TensorDataset(training_data), batch_size=512, shuffle=True)
+    train_loader = DataLoader(TensorDataset(training_data), batch_size=1000, shuffle=True)
     validation_loader = DataLoader(
-        TensorDataset(validation_data), batch_size=512, shuffle=False )
+        TensorDataset(validation_data), batch_size=1000, shuffle=False )
 
     run_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     sampler_name = (
