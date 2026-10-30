@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
-from .data import get_potential_settings
+from .data import evenly_spaced_indices, get_potential_settings
 from .checkpoint import (
     checkpoint_option,
     checkpoint_settings,
@@ -154,7 +154,7 @@ def main():
         parser.error("The archive's positions and md_time arrays must have equal lengths")
     if len(times) < 3 or not np.isfinite(positions[:, :2]).all() or not np.isfinite(times).all():
         parser.error("The archive needs at least three finite position/time samples")
-    potential_type, _, _ = get_potential_settings(args.data)
+    potential_type, _, _, _ = get_potential_settings(args.data)
     reference_positions = positions[:, :2].copy()
     if potential_type == "chain":
         reference_positions[:, 0] %= args.period
@@ -166,7 +166,7 @@ def main():
         if potential_type == "chain":
             model_reference[:, 0] = np.mod(model_reference[:, 0], args.period) / args.period
         count = min(args.max_samples, len(reference))
-        selected = rng.choice(len(reference), size=count, replace=False)
+        selected = evenly_spaced_indices(len(reference), count)
         samples = torch.from_numpy(model_reference[selected])
         permutation = torch.randperm(count, generator=torch.Generator().manual_seed(7))
         validation_count = max(1, int(count * 0.1))
@@ -184,7 +184,7 @@ def main():
         if args.trajectory_length > len(times):
             parser.error("--trajectory-length cannot exceed the saved trajectory length")
         pairs = min(args.max_samples, len(positions) - 1)
-        selected = rng.choice(len(positions) - 1, size=pairs, replace=False)
+        selected = evenly_spaced_indices(len(positions) - 1, pairs)
         conditions = np.column_stack(
             (positions[selected, :2], times[selected]),
         ).astype(np.float32)

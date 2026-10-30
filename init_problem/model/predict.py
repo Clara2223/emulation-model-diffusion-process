@@ -10,7 +10,8 @@ from matplotlib.lines import Line2D
 from .data import STATE_DIM
 from .model_2D import DEVICE
 
-CHAIN_PERIOD = 32.0
+
+CHAIN_PERIOD = 32.0         #default 
 
 
 LOG_FIELDS = ["timestamp",
@@ -27,7 +28,7 @@ LOG_FIELDS = ["timestamp",
     "device",
 ]
 
-#ål: remember to chainge
+
 def potential(
     x,
     y,
@@ -35,6 +36,7 @@ def potential(
     barrier_amplitude=0.0,
     barrier_width=0.25,
     period=CHAIN_PERIOD,
+    well_amplitude=3.0,
 ):
     if potential_type == "chain":
         centers = (
@@ -47,8 +49,8 @@ def potential(
         return -np.sum(wells, axis=-1) + 0.1 * np.asarray(y) ** 2
     if potential_type not in {"double-well", "double-well-Hbarrier"}:
         raise ValueError(f"Unsupported potential type: {potential_type}")
-    g1 = 3.0 * np.exp(-((x + 1.0) ** 2 + y**2) / (2 * 0.5**2))
-    g2 = 3.0 * np.exp(-((x - 1.0) ** 2 + y**2) / (2 * 0.5**2))
+    g1 = well_amplitude * np.exp(-((x + 1.0) ** 2 + y**2) / (2 * 0.5**2))
+    g2 = well_amplitude * np.exp(-((x - 1.0) ** 2 + y**2) / (2 * 0.5**2))
     ridge = 0.0
     if potential_type == "double-well-Hbarrier":
         if barrier_amplitude <= 0 or barrier_width <= 0:
@@ -91,14 +93,23 @@ def sample_flow(model, mean, std, n_samples=1_000, ode_steps=50):
     return X.cpu().numpy() * std.cpu().numpy() + mean.cpu().numpy()
 
 
-#stats/measures: ål: I'm not sure about this diffusion coefficient calculation
-def calculate_einstein_diffusion(positions, dt=0.005):
-    """Estimate diffusion from the 'late-time' slope of the MSD."""
+
+def calculate_einstein_diffusion(positions, times, dt=0.005):
+    """ 
+    Einstein connected microscopic brownian motion to (macroscopic) diffusion.
+    - Ficks second law: prob. p over time: dp/dt= D nabla**2 p
+    - mean square displacement: avg. square distance x grow grow linearly in time : <x**2>=2Dt (1D)
+    - Stokes-Einstein equation: for spherial particle in fluid w dynamic viscosity eta at absolute temp. T: D=k_BT/6pi*eta*a
+    - Einstein relation (diffusion): connects particle mobility mu (drift velocity per unit force) to D: D=mu*k_BT (mu_q*k_BT / q for EM/charged particles)
+    
+    BELOW: D is estimated from the mean square displacement (MSD) of trajectory
+    from the 'late-time' slope of the MSD
+    """
     displacement = positions - positions[0]
-    time = np.arange(len(positions)) * dt
+    time = np.asarray(times)
     msd = np.sum(displacement**2, axis=1)
-    slope, _ = np.polyfit(time[len(time) // 2 :], msd[len(time) // 2 :], 1)
-    return slope / 4.0
+    slope, _ = np.polyfit(time[len(time) // 2 :], msd[len(time) // 2 :], 1)     #aka msd/t
+    return slope / 4.0                                      # 4 because 2D
 
 
 def calculate_kramers_rate(
@@ -109,6 +120,7 @@ def calculate_kramers_rate(
     barrier_amplitude=0.0,
     barrier_width=0.25,
     period=CHAIN_PERIOD,
+    well_amplitude=3.0,
 ):
     """Estimate the underdamped barrier-crossing rate for this potential."""
     dx = 1e-4
@@ -116,6 +128,7 @@ def calculate_kramers_rate(
         x, 0.0, potential_type,
         barrier_amplitude=barrier_amplitude,
         barrier_width=barrier_width,
+        well_amplitude=well_amplitude,
         period=period,
     )
     well_x = -1.0
@@ -337,6 +350,7 @@ def plot_results(
     barrier_width=0.25,
     show=False,
     period=CHAIN_PERIOD,
+    well_amplitude=3.0,
 ):
     if model_type not in {"diffusion", "flow"}:
         raise ValueError(f"Unsupported model type for plotting: {model_type}")
@@ -355,7 +369,7 @@ def plot_results(
         Y,
         potential(
             X, Y, potential_type, barrier_amplitude=barrier_amplitude,
-            barrier_width=barrier_width, period=period,
+            barrier_width=barrier_width, well_amplitude=well_amplitude, period=period,
         ),
         levels=12,
         cmap="Greys",
@@ -398,6 +412,7 @@ def plot_results(
         potential(
             plot_samples[:, 0], plot_samples[:, 1], potential_type,
             barrier_amplitude=barrier_amplitude, barrier_width=barrier_width,
+            well_amplitude=well_amplitude,
             period=period,
         ),
         bins=40,
@@ -409,6 +424,7 @@ def plot_results(
         potential(
             generated[:, 0], generated[:, 1], potential_type,
             barrier_amplitude=barrier_amplitude, barrier_width=barrier_width,
+            well_amplitude=well_amplitude,
             period=period,
         ),
         bins=40,
@@ -448,6 +464,7 @@ def plot_results(
         potential(
             x_line, 0.0, potential_type,
             barrier_amplitude=barrier_amplitude, barrier_width=barrier_width,
+            well_amplitude=well_amplitude,
             period=period,
         ),
         color="black", lw=2, linestyle="--", label="V(x,0)",

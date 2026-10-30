@@ -109,14 +109,16 @@ def main():
         parser.error("--period must be positive")
 
     #data handling: load data train and compute mean/std for normalization
-    train_data, true_samples, positions = load_equilibrium_bundle(
+    train_data, true_samples, positions, times = load_equilibrium_bundle(
         args.data, args.max_samples, args.diffusion_frames)
     if train_data.ndim != 2 or train_data.shape[1] < 2:
         parser.error("The data archive must contain positions with x and y columns")
     train_data = train_data[:, :2]
     true_samples = true_samples[:, :2]
     positions = positions[:, :2]
-    potential_type, barrier_amplitude, barrier_width = get_potential_settings(args.data)
+    potential_type, barrier_amplitude, barrier_width, well_amplitude = (
+        get_potential_settings(args.data)
+    )
     if potential_type == "chain":
         train_data[:, 0] = torch.remainder(train_data[:, 0], args.period) / args.period
         true_samples[:, 0] %= args.period
@@ -201,11 +203,12 @@ def main():
     
 
     #results: save plot, 'stats' and log file
-    einstein = calculate_einstein_diffusion(positions)
+    einstein = calculate_einstein_diffusion(positions,times)
     kramers_rate, barrier_height = calculate_kramers_rate(
         potential_type=potential_type,
         barrier_amplitude=barrier_amplitude,
         barrier_width=barrier_width,
+        well_amplitude=well_amplitude,
         period=args.period,
     )
     marginal_distance, joint_distance = histogram_distances(true_samples, generated)
@@ -220,6 +223,7 @@ def main():
         potential_type=potential_type,
         barrier_amplitude=barrier_amplitude,
         barrier_width=barrier_width,
+        well_amplitude=well_amplitude,
         show=args.show,
         period=args.period,
     )
