@@ -8,7 +8,7 @@ from .model_2D import DEVICE, SIGMA_MAX, SIGMA_MIN
 
 
 class Diffusion3D(nn.Module):
-    """Noise-conditioned score model for 3D samples or conditional transitions."""
+    """Noise-conditioned score model for 3D samples or conditional transitions"""
 
     def __init__(
         self,
@@ -46,7 +46,7 @@ class Diffusion3D(nn.Module):
 
 
 class Flow3D(nn.Module):
-    """Time-conditioned flow model for 3D samples or conditional transitions."""
+    """Time-conditioned flow model for 3D samples or conditional transitions"""
 
     def __init__(
         self,
@@ -77,6 +77,7 @@ class Flow3D(nn.Module):
         return self.net(torch.cat(features, dim=1))
 
 
+#   TRAINING LOOP
 def _fit(
     model,
     states,
@@ -167,6 +168,8 @@ def _fit(
     return model, history, validation_history
 
 
+# TRAINING 
+
 def train_diffusion(
     model,
     states,
@@ -219,6 +222,8 @@ def train_flow(
         checkpoint_path, checkpoint_metadata, resume_checkpoint,
     )
 
+
+#GENERATING PREDICTIONS - SAMPLING
 
 def sample_diffusion(model, n_samples, condition=None, n_levels=12, steps_per_level=50):
     model.eval()

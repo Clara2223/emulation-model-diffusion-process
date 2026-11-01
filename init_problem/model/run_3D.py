@@ -1,7 +1,6 @@
 import argparse
 from datetime import datetime
 from pathlib import Path
-
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
@@ -25,24 +24,8 @@ from .model_2D import DEVICE
 from .predict import histogram_distances, log_prediction, plot_training_loss
 
 
-def _crossing_rate(positions, times, potential_type, period):
-    if potential_type == "chain":
-        bin_width = period / 16
-        labels = np.floor(np.mod(positions[..., 0], period) / bin_width).astype(np.int64)
-    else:
-        labels = positions[..., 0] >= 0.0
-    if positions.ndim == 2:
-        labels = labels[None, :]
-        times = np.asarray(times)[None, :]
-    durations = np.asarray(times)[:, -1] - np.asarray(times)[:, 0]
-    if np.any(durations <= 0):
-        raise ValueError("Each trajectory must span positive physical MD time")
-    crossings = np.count_nonzero(labels[:, 1:] != labels[:, :-1], axis=1)
-    return float(crossings.sum() / durations.sum())
-
-
 def _save_comparison(reference, generated, reference_time, generated_time, objective, output):
-    fig, axes = plt.subplots(1, 2, figsize=(12, 4), dpi=160)
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4), dpi=160, constrained_layout=True)
     if objective == "joint":
         for ax, samples, title in (
             (axes[0], reference, "MD reference"),
@@ -54,19 +37,17 @@ def _save_comparison(reference, generated, reference_time, generated_time, objec
             ax.set_title(title)
         fig.colorbar(points, ax=axes, label="Physical MD time")
     else:
-        count = min(len(reference), 20_000)
-        axes[0].plot(reference_time[:count], reference[:count, 0], linewidth=0.6)
-        axes[0].set_title("MD reference trajectory")
-        axes[0].set_xlabel("Physical MD time")
-        axes[0].set_ylabel("x")
-        for index in range(min(len(generated), 8)):
-            axes[1].plot(
-                generated_time[index], generated[index, :, 0], linewidth=0.7, alpha=0.8,
+        for ax, samples, sample_times, title in (
+            (axes[0], reference, reference_time, "MD reference"),
+            (axes[1], generated, generated_time, "Generated conditional samples"),
+        ):
+            points = ax.scatter(
+                samples[:, 0], samples[:, 1], c=sample_times, s=3, alpha=0.5,
             )
-        axes[1].set_title("Generated trajectories")
-        axes[1].set_xlabel("Physical MD time")
-        axes[1].set_ylabel("x")
-    fig.tight_layout()
+            ax.set_xlabel("x")
+            ax.set_ylabel("y")
+            ax.set_title(title)
+        fig.colorbar(points, ax=axes, label="Physical MD time")
     fig.savefig(output, dpi=160)
     plt.close(fig)
 
@@ -82,17 +63,15 @@ DEFAULT_DATA = Path(__file__).resolve().parents[1] /"MD"/ "train_data" / "3D_cha
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Train 3D (x, y, physical MD time) equilibrium or transition models"
+        description="Train a joint or condition-based 3D trajectory model"
     )
     parser.add_argument("--data", type=Path)
     parser.add_argument("--period", type=float)
-    parser.add_argument("--objective", choices=("joint", "transitions"))
+    parser.add_argument("--objective", choices=("joint", "condition"))
     parser.add_argument("--model", choices=("diffusion", "flow"))
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--max-samples", type=int)
     parser.add_argument("--generated-samples", type=int, default=1_000)
-    parser.add_argument("--trajectories", type=int, default=1)
-    parser.add_argument("--trajectory-length", type=int, default=100)
     parser.add_argument("--n-levels", type=int)
     parser.add_argument(
         "--steps-per-level", type=int,
@@ -124,6 +103,8 @@ def main():
     args.objective = checkpoint_option(
         parser, args.objective, settings, "objective", "joint",
     )
+    if args.objective not in {"joint", "condition"}:
+        parser.error(f"Unsupported checkpoint objective: {args.objective}")
     args.model = checkpoint_option(parser, args.model, settings, "model", "diffusion")
     args.max_samples = checkpoint_option(
         parser, args.max_samples, settings, "max_samples", 100_000, "samples",
@@ -142,26 +123,44 @@ def main():
         parser.error("--max-samples must be at least 2 for train/validation splits")
     if args.period <= 0:
         parser.error("--period must be positive")
-    if min(args.trajectories, args.trajectory_length) < 2:
-        parser.error("--trajectories and --trajectory-length must be at least 2")
-
     with np.load(args.data) as archive:
         positions = np.asarray(archive["positions"], dtype=np.float32)
         times = np.asarray(archive["md_time"], dtype=np.float32)
-    if positions.ndim != 2 or positions.shape[1] < 2:
-        parser.error("The archive must contain positions with x and y columns")
-    if len(positions) != len(times):
-        parser.error("The archive's positions and md_time arrays must have equal lengths")
-    if len(times) < 3 or not np.isfinite(positions[:, :2]).all() or not np.isfinite(times).all():
+        initial_positions = (
+            np.asarray(archive["initial_positions"], dtype=np.float32)
+            if "initial_positions" in archive else None
+        )
+    if positions.ndim == 2:
+        positions = positions[None, ...]
+    if positions.ndim != 3 or positions.shape[2] < 2:
+        parser.error("The archive must contain 2D or 3D position samples with x and y columns")
+    n_trajectories, n_saved, _ = positions.shape
+    if times.ndim != 1 or len(times) != n_saved:
+        parser.error("The archive's md_time array must match the saved frame count")
+    if n_saved < 3 or not np.isfinite(positions[..., :2]).all() or not np.isfinite(times).all():
         parser.error("The archive needs at least three finite position/time samples")
+    if args.objective == "condition":
+        if initial_positions is None:
+            parser.error(
+                "The condition objective requires initial_positions; regenerate the archive "
+                "with MD/MD_sim.py"
+            )
+        if (
+            initial_positions.shape != (n_trajectories, 2)
+            or not np.isfinite(initial_positions).all()
+        ):
+            parser.error("initial_positions must contain one finite x,y pair per trajectory")
     potential_type, _, _, _ = get_potential_settings(args.data)
-    reference_positions = positions[:, :2].copy()
+    reference_positions = positions[..., :2].copy()
     if potential_type == "chain":
-        reference_positions[:, 0] %= args.period
+        reference_positions[..., 0] %= args.period
     rng = np.random.default_rng(7)
+    times_flat = np.broadcast_to(times[None, :], (n_trajectories, n_saved)).reshape(-1)
 
     if args.objective == "joint":
-        reference = np.column_stack((reference_positions, times)).astype(np.float32)
+        reference = np.column_stack(
+            (reference_positions.reshape(-1, 2), times_flat),
+        ).astype(np.float32)
         model_reference = reference.copy()
         if potential_type == "chain":
             model_reference[:, 0] = np.mod(model_reference[:, 0], args.period) / args.period
@@ -181,29 +180,39 @@ def main():
         model_state_dim, condition_dim = 3, 0
         reference_for_metrics = reference
     else:
-        if args.trajectory_length > len(times):
-            parser.error("--trajectory-length cannot exceed the saved trajectory length")
-        pairs = min(args.max_samples, len(positions) - 1)
-        selected = evenly_spaced_indices(len(positions) - 1, pairs)
-        conditions = np.column_stack(
-            (positions[selected, :2], times[selected]),
-        ).astype(np.float32)
-        targets = positions[selected + 1, :2].astype(np.float32)
+        # Emulation objective: conditions = [time, initial_position_x, initial_position_y]
+        init_pos_flat = np.broadcast_to(
+            initial_positions[:, None, :], (n_trajectories, n_saved, 2),
+        ).reshape(-1, 2)
+        condition_raw = np.column_stack((times_flat, init_pos_flat)).astype(np.float32)
+        target_raw = reference_positions.reshape(-1, 2).astype(np.float32)
+
         if potential_type == "chain":
-            conditions[:, 0] = np.mod(conditions[:, 0], args.period) / args.period
-            targets[:, 0] = np.mod(targets[:, 0], args.period) / args.period
+            condition_raw[:, 1] = np.mod(condition_raw[:, 1], args.period) / args.period
+            target_raw[:, 0] = np.mod(target_raw[:, 0], args.period) / args.period
+
+        pairs = min(args.max_samples, len(target_raw))
+        selected = evenly_spaced_indices(len(target_raw), pairs)
+        
+        train_condition_raw_all = condition_raw[selected]
+        train_target_raw_all = target_raw[selected]
+
+        # Random shuffling split
         permutation = torch.randperm(pairs, generator=torch.Generator().manual_seed(7))
         validation_count = max(1, int(pairs * 0.1))
         train_indices = permutation[validation_count:].numpy()
         val_indices = permutation[:validation_count].numpy()
-        train_condition_raw = conditions[train_indices]
-        val_condition_raw = conditions[val_indices]
-        train_target_raw = targets[train_indices]
-        val_target_raw = targets[val_indices]
+
+        train_condition_raw = train_condition_raw_all[train_indices]
+        val_condition_raw = train_condition_raw_all[val_indices]
+        train_target_raw = train_target_raw_all[train_indices]
+        val_target_raw = train_target_raw_all[val_indices]
+
         condition_mean = train_condition_raw.mean(axis=0)
         condition_std = np.maximum(train_condition_raw.std(axis=0), 1e-6)
         target_mean = train_target_raw.mean(axis=0)
         target_std = np.maximum(train_target_raw.std(axis=0), 1e-6)
+
         train_conditions = torch.as_tensor(
             (train_condition_raw - condition_mean) / condition_std,
             dtype=torch.float32,
@@ -225,7 +234,7 @@ def main():
             device=DEVICE,
         )
         model_state_dim, condition_dim = 2, 3
-        reference_for_metrics = reference_positions
+        reference_for_metrics = reference_positions.reshape(-1, 2)
 
     normalization_metadata = (
         {
@@ -239,6 +248,9 @@ def main():
             "target_mean": torch.as_tensor(target_mean, dtype=torch.float32),
             "target_std": torch.as_tensor(target_std, dtype=torch.float32),
         }
+    )
+    total_epochs = args.epochs + len(
+        resume_checkpoint.get("training_history", []) if resume_checkpoint else []
     )
     checkpoint_metadata = {
         "model": args.model,
@@ -259,9 +271,6 @@ def main():
         f"{args.n_levels}NoiseLevels_{args.steps_per_level}StepsPerNoiseLevel"
         if args.model == "diffusion"
         else f"{args.ode_steps}ODESteps"
-    )
-    total_epochs = args.epochs + len(
-        resume_checkpoint.get("training_history", []) if resume_checkpoint else []
     )
     run_name = (
         f"{args.data.stem}_{args.model}_{args.objective}_{total_epochs}epochs_"
@@ -324,70 +333,49 @@ def main():
             generated[:, 0] = np.mod(generated[:, 0], 1.0) * args.period
         generated_for_metrics = generated
         generated_time = generated[:, 2]
-        reference_time = times
+        reference_time = times_flat
     else:
-        start_indices = rng.choice(
-            len(times) - args.trajectory_length + 1, size=args.trajectories, replace=True,
+        sample_indices = rng.choice(
+            len(train_condition_raw_all), size=args.generated_samples, replace=True,
         )
-        trajectory_times = np.stack([
-            times[start:start + args.trajectory_length] for start in start_indices
-        ])
-        generated = np.empty((args.trajectories, args.trajectory_length, 2), dtype=np.float32)
-        generated[:, 0] = positions[start_indices, :2]
+        generated_conditions = train_condition_raw_all[sample_indices]
+        condition = torch.as_tensor(
+            (generated_conditions - condition_mean) / condition_std,
+            dtype=torch.float32,
+            device=DEVICE,
+        )
+        generated_normalized = (
+            sample(
+                model,
+                args.generated_samples,
+                condition=condition,
+                n_levels=args.n_levels,
+                steps_per_level=args.steps_per_level,
+            )
+            if args.model == "diffusion"
+            else sample(
+                model, args.generated_samples, condition=condition, ode_steps=args.ode_steps,
+            )
+        )
+        generated = generated_normalized.cpu().numpy() * target_std + target_mean
         if potential_type == "chain":
-            generated[:, 0, 0] %= args.period
-        for step in range(args.trajectory_length - 1):
-            condition_raw = np.column_stack((
-                generated[:, step], trajectory_times[:, step],
-            )).astype(np.float32)
-            if potential_type == "chain":
-                condition_raw[:, 0] = (
-                    np.mod(condition_raw[:, 0], args.period) / args.period
-                )
-            condition = torch.as_tensor(
-                (condition_raw - condition_mean) / condition_std,
-                dtype=torch.float32,
-                device=DEVICE,
-            )
-            next_normalized = (
-                sample(
-                    model,
-                    args.trajectories,
-                    condition=condition,
-                    n_levels=args.n_levels,
-                    steps_per_level=args.steps_per_level,
-                )
-                if args.model == "diffusion"
-                else sample(
-                    model, args.trajectories, condition=condition, ode_steps=args.ode_steps,
-                )
-            )
-            next_position = next_normalized.cpu().numpy() * target_std + target_mean
-            if potential_type == "chain":
-                next_position[:, 0] = np.mod(next_position[:, 0], 1.0) * args.period
-            generated[:, step + 1] = next_position
-        generated_for_metrics = generated.reshape(-1, 2)
-        generated_time = trajectory_times
-        reference_time = times
-        sampling_config += (
-            f";trajectories={args.trajectories};trajectory_length={args.trajectory_length}"
-        )
+            generated[:, 0] = np.mod(generated[:, 0], 1.0) * args.period
+        generated_for_metrics = generated
+        generated_time = generated_conditions[:, 0]
+        reference_time = times_flat
+        sampling_config += f";emulation_samples={args.generated_samples}"
 
     marginal_distance, joint_distance = histogram_distances(
         reference_for_metrics, generated_for_metrics,
     )
-    reference_rate = generated_rate = None
-    if args.objective == "transitions":
-        reference_rate = _crossing_rate(positions[:, :2], times, potential_type, args.period)
-        generated_rate = _crossing_rate(generated, generated_time, potential_type, args.period)
 
     output_dir.mkdir(parents=True, exist_ok=True)
     output = output_dir / f"{run_name}_samples.png"
     loss_output = output_dir / f"{run_name}_loss.png"
     data_output = output_dir / f"{run_name}_generated.npz"
     _save_comparison(
-        reference if args.objective == "joint" else reference_positions,
-        generated if args.objective == "joint" else generated,
+        reference if args.objective == "joint" else reference_positions.reshape(-1, 2),
+        generated,
         reference_time,
         generated_time,
         args.objective,
@@ -410,15 +398,10 @@ def main():
         sampling_config=sampling_config,
         histogram_marginal_hellinger=marginal_distance,
         histogram_joint_hellinger=joint_distance,
-        reference_crossing_rate=reference_rate,
-        generated_crossing_rate=generated_rate,
     )
     print(f"Device: {DEVICE}")
     print(f"Mean marginal histogram Hellinger distance: {marginal_distance:.5f}")
     print(f"Joint histogram Hellinger distance: {joint_distance:.5f}")
-    if reference_rate is not None:
-        print(f"Observed MD crossing rate: {reference_rate:.6g} per time unit")
-        print(f"Generated crossing rate: {generated_rate:.6g} per time unit")
     print(f"Generated data saved as '{data_output.resolve()}'")
     print(f"Visualization saved as '{output.resolve()}'")
     print(f"Training loss saved as '{loss_output.resolve()}'")
