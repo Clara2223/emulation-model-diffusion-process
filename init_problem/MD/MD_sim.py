@@ -7,9 +7,9 @@ from numba import jit
 import matplotlib.pyplot as plt
 import numpy as np
 
-from TST_rate import harmonic_tst, well_amplitude_for_rate
-from plot import plot_simulation
-from potentials import compute_potential
+from .TST_rate import harmonic_tst, well_amplitude_for_rate
+from .plot import plot_simulation
+from .potentials import compute_potential
 
 SAVE_EVERY = 10
 

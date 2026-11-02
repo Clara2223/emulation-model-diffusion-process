@@ -58,6 +58,9 @@ def main():
     parser.add_argument("--max-samples", type=int)
     parser.add_argument("--generated-samples", type=int, default=1_000)
     parser.add_argument("--model", choices=("diffusion", "flow"))
+    parser.add_argument(
+        "--trajectory", type=int, help="1-based trajectory to train on (default: 1)",
+    )
     parser.add_argument("--n-levels", type=int)
     parser.add_argument(
         "--steps-per-level", type=int,
@@ -87,6 +90,9 @@ def main():
             )
     args.data = args.data or DEFAULT_DATA
     args.model = checkpoint_option(parser, args.model, settings, "model", "diffusion")
+    args.trajectory = checkpoint_option(
+        parser, args.trajectory, settings, "trajectory", 1,
+    )
     args.period = checkpoint_option(parser, args.period, settings, "period", 32.0)
     args.max_samples = checkpoint_option(
         parser, args.max_samples, settings, "max_samples", 100_000, "samples",
@@ -107,10 +113,14 @@ def main():
         parser.error("--generated-samples must be at least 1")
     if args.period <= 0:
         parser.error("--period must be positive")
+    if args.trajectory < 1:
+        parser.error("--trajectory must be at least 1")
 
     #data handling: load data train and compute mean/std for normalization
     train_data, true_samples, positions, times = load_equilibrium_bundle(
-        args.data, args.max_samples, args.diffusion_frames)
+        args.data, args.max_samples, args.diffusion_frames,
+        trajectory=args.trajectory,
+    )
     if train_data.ndim != 2 or train_data.shape[1] < 2:
         parser.error("The data archive must contain positions with x and y columns")
     train_data = train_data[:, :2]
@@ -147,7 +157,7 @@ def main():
     )
     run_name = (
         f"{args.data.stem}_{args.model}_{total_epochs}epochs_"
-        f"{len(train_data)}samples_{sampler_name}_{run_timestamp}"
+        f"traj{args.trajectory}_{len(train_data)}samples_{sampler_name}_{run_timestamp}"
     )
     prediction_dir = Path(__file__).resolve().parents[1] / "predictions"
     checkpoint_path = (
@@ -156,8 +166,10 @@ def main():
     checkpoint_metadata = {
         "model": args.model,
         "data": str(args.data),
+        "trajectory": args.trajectory,
         "epochs": total_epochs,
         "max_samples": len(train_data),
+        "generated_samples": args.generated_samples,
         "potential_type": potential_type,
         "period": args.period,
         "mean": mean.detach().cpu(),
@@ -215,6 +227,7 @@ def main():
     prediction_dir.mkdir(parents=True, exist_ok=True)
     output = prediction_dir / f"{run_name}_samples.png"
     loss_output = prediction_dir / f"{run_name}_loss.png"
+    np.savez_compressed(prediction_dir / f"{run_name}_generated.npz", generated=generated)
     plot_results(
         true_samples,
         generated,

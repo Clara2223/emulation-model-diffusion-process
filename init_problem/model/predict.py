@@ -1,3 +1,4 @@
+import argparse
 import csv
 from datetime import datetime
 from pathlib import Path
@@ -7,11 +8,9 @@ import numpy as np
 import torch
 from matplotlib.lines import Line2D
 
+from ..MD.potentials import CHAIN_PERIOD, compute_potential as potential
 from .data import STATE_DIM
 from .model_2D import DEVICE
-
-
-CHAIN_PERIOD = 32.0         #default 
 
 
 LOG_FIELDS = ["timestamp",
@@ -28,35 +27,6 @@ LOG_FIELDS = ["timestamp",
     "device",
 ]
 
-
-def potential(
-    x,
-    y,
-    potential_type="double-well",
-    barrier_amplitude=0.0,
-    barrier_width=0.25,
-    period=CHAIN_PERIOD,
-    well_amplitude=3.0,
-):
-    if potential_type == "chain":
-        centers = (
-            period / 8 * np.arange(8)[:, None] + np.array([-1.0, 1.0])
-        ).ravel()
-        half_period = period / 2
-        dx = (np.asarray(x)[..., None] - centers + half_period) % period - half_period
-        dy = np.asarray(y)[..., None]
-        wells = 3.0 * np.exp(-0.5 * ((dx / 0.5) ** 2 + (dy / 0.5) ** 2))
-        return -np.sum(wells, axis=-1) + 0.1 * np.asarray(y) ** 2
-    if potential_type not in {"double-well", "double-well-Hbarrier"}:
-        raise ValueError(f"Unsupported potential type: {potential_type}")
-    g1 = well_amplitude * np.exp(-((x + 1.0) ** 2 + y**2) / (2 * 0.5**2))
-    g2 = well_amplitude * np.exp(-((x - 1.0) ** 2 + y**2) / (2 * 0.5**2))
-    ridge = 0.0
-    if potential_type == "double-well-Hbarrier":
-        if barrier_amplitude <= 0 or barrier_width <= 0:
-            raise ValueError("H-barrier plots require positive amplitude and width metadata")
-        ridge = barrier_amplitude * np.exp(-0.5 * (np.asarray(x) / barrier_width) ** 2)
-    return -(g1 + g2) + 0.1 * (x**2 + y**2) + ridge
 
 #diffusion model predictions
 #generating *equilibrium samples* with annealed (discrete steps) Langevin dynamics
@@ -340,6 +310,36 @@ def plot_training_loss(losses, output_path, validation_losses=None, show=False):
     plt.close(fig)
 
 
+def plot_trajectory_comparison(reference, generated, reference_time, generated_time, objective, output):
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4), dpi=160, constrained_layout=True)
+    if objective == "joint":
+        panels = (
+            (axes[0], reference, "MD reference"),
+            (axes[1], generated, "Generated joint samples"),
+        )
+        for ax, samples, title in panels:
+            points = ax.scatter(samples[:, 0], samples[:, 1], c=samples[:, 2], s=3, alpha=0.5)
+            ax.set_xlabel("x")
+            ax.set_ylabel("y")
+            ax.set_title(title)
+        fig.colorbar(points, ax=axes, label="Physical MD time")
+    else:
+        panels = (
+            (axes[0], reference, reference_time, "MD reference"),
+            (axes[1], generated, generated_time, "Generated conditional samples"),
+        )
+        for ax, samples, sample_times, title in panels:
+            points = ax.scatter(
+                samples[:, 0], samples[:, 1], c=sample_times, s=3, alpha=0.5,
+            )
+            ax.set_xlabel("x")
+            ax.set_ylabel("y")
+            ax.set_title(title)
+        fig.colorbar(points, ax=axes, label="Physical MD time")
+    fig.savefig(output, dpi=160)
+    plt.close(fig)
+
+
 def plot_results(
     true_samples,
     generated,
@@ -491,3 +491,153 @@ def plot_results(
     if show:
         plt.show()
     plt.close(fig)
+
+
+def plot_checkpoint(checkpoint_path, plot="loss", zoom=False):
+    from .checkpoint import (
+        checkpoint_settings,
+        load_training_checkpoint,
+        resolve_checkpoint_data,
+    )
+
+    checkpoint_path = Path(checkpoint_path)
+    checkpoint = load_training_checkpoint(checkpoint_path)
+    settings = checkpoint_settings(checkpoint_path, checkpoint)
+    run_name = checkpoint_path.stem.removesuffix("_checkpoint")
+    output_dir = checkpoint_path.parent
+
+    if plot in {"loss", "both"}:
+        training_history = checkpoint.get("training_history")
+        if not training_history:
+            raise ValueError(f"Checkpoint has no training loss history: {checkpoint_path}")
+        loss_output = output_dir / f"{run_name}_loss.png"
+        plot_training_loss(
+            training_history,
+            loss_output,
+            checkpoint.get("validation_history"),
+            show=zoom,
+        )
+        print(f"Training loss saved to {loss_output}")
+
+    if plot not in {"results", "both"}:
+        return
+
+    data_path = resolve_checkpoint_data(
+        checkpoint_path, settings, Path(__file__).resolve().parents[1],
+    )
+    generated_path = output_dir / f"{run_name}_generated.npz"
+    objective = settings.get("objective")
+    if objective is not None:
+        with np.load(data_path) as archive:
+            positions = np.asarray(archive["positions"], dtype=np.float32)
+            times = np.asarray(archive["md_time"], dtype=np.float32)
+        if positions.ndim == 2:
+            positions = positions[None, ...]
+        trajectory = settings.get("trajectory", 1) - 1
+        if trajectory < 0 or trajectory >= len(positions):
+            raise ValueError(f"Checkpoint trajectory is unavailable in {data_path}")
+        reference_positions = positions[trajectory, :, :2]
+        if settings.get("potential_type") == "chain":
+            reference_positions = reference_positions.copy()
+            reference_positions[:, 0] %= settings.get("period", CHAIN_PERIOD)
+        reference_time = times
+        reference = (
+            np.column_stack((reference_positions, times))
+            if objective == "joint"
+            else reference_positions
+        )
+        if generated_path.exists():
+            with np.load(generated_path) as data:
+                generated = data["generated"]
+                generated_time = data["generated_time"]
+                objective = str(data["objective"].item())
+        else:
+            raise FileNotFoundError(
+                f"Generated samples not found: {generated_path}. "
+                "This 3D checkpoint has no saved samples to replot."
+            )
+        result_output = output_dir / f"{run_name}_samples.png"
+        plot_trajectory_comparison(
+            reference, generated, reference_time, generated_time,
+            objective, result_output,
+        )
+    else:
+        from .data import get_potential_settings, load_equilibrium_bundle
+        from .model_2D import DEVICE, DiffusionModel, FlowModel
+
+        model_name = settings.get("model")
+        model_class = {"diffusion": DiffusionModel, "flow": FlowModel}.get(model_name)
+        if model_class is None:
+            raise ValueError(f"Checkpoint has unsupported model type: {model_name}")
+        model = model_class().to(DEVICE)
+        model.load_state_dict(checkpoint["model_state_dict"])
+        mean = torch.as_tensor(settings["mean"], dtype=torch.float32, device=DEVICE)
+        std = torch.as_tensor(settings["std"], dtype=torch.float32, device=DEVICE)
+        if generated_path.exists():
+            with np.load(generated_path) as data:
+                generated = data["generated"]
+        elif model_name == "diffusion":
+            generated = sample_score(
+                model,
+                mean,
+                std,
+                n_samples=settings.get("generated_samples", 1_000),
+                n_levels=settings.get("noise_levels", 12),
+                steps_per_level=settings.get("steps_per_level", 50),
+            )
+        else:
+            generated = sample_flow(
+                model,
+                mean,
+                std,
+                n_samples=settings.get("generated_samples", 1_000),
+                ode_steps=settings.get("ode_steps", 50),
+            )
+
+        true_samples, _, _, _ = load_equilibrium_bundle(
+            data_path,
+            settings.get("max_samples", 100_000),
+            settings.get("diffusion_frames", 500_000),
+            trajectory=settings.get("trajectory", 1),
+        )
+        true_samples = true_samples[:, :2]
+        potential_type, barrier_amplitude, barrier_width, well_amplitude = (
+            get_potential_settings(data_path)
+        )
+        period = settings.get("period", CHAIN_PERIOD)
+        if potential_type == "chain":
+            true_samples[:, 0] %= period
+            generated[:, 0] %= period
+        result_output = output_dir / f"{run_name}_samples.png"
+        plot_results(
+            true_samples,
+            generated,
+            result_output,
+            model_type=model_name,
+            potential_type=potential_type,
+            barrier_amplitude=barrier_amplitude,
+            barrier_width=barrier_width,
+            period=period,
+            well_amplitude=well_amplitude,
+        )
+        if not generated_path.exists():
+            np.savez_compressed(generated_path, generated=generated)
+    print(f"Prediction plot saved to {result_output}")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Replot prediction outputs from a checkpoint")
+    parser.add_argument("--checkpoint", type=Path, required=True)
+    parser.add_argument("--plot", choices=("loss", "results", "both"), default="loss")
+    parser.add_argument(
+        "--zoom", action="store_true",
+        help="Open the loss plot interactively so it can be zoomed (default: save PNG only)",
+    )
+    args = parser.parse_args()
+    if args.zoom and args.plot == "results":
+        parser.error("--zoom requires --plot loss or --plot both")
+    plot_checkpoint(args.checkpoint, args.plot, args.zoom)
+
+
+if __name__ == "__main__":
+    main()

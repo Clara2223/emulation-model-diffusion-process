@@ -37,11 +37,17 @@ class Diffusion3D(nn.Module):
         log_sigma = torch.log(sigma_tau.clamp_min(1e-6)).unsqueeze(1)
         angles = log_sigma * self.frequencies.unsqueeze(0)
         features = [X_tau]
+        
         if self.condition_dim:
+            
             if condition is None or condition.shape[1] != self.condition_dim:
                 raise ValueError(f"Expected a condition with {self.condition_dim} features")
+            
             features.append(condition)
+        
+        #fourier noise features 
         features.append(torch.cat((torch.sin(angles), torch.cos(angles)), dim=1))
+        
         return self.net(torch.cat(features, dim=1))
 
 
@@ -183,8 +189,8 @@ def train_diffusion(
     resume_checkpoint=None,
 ):
     def loss_fn(Z, condition):
-        tau = 1e-6 + (1 - 1e-6) * torch.rand(len(Z), device=DEVICE)  # keep tau above zero
-        sigma_tau = SIGMA_MIN * torch.exp(tau * np.log(SIGMA_MAX / SIGMA_MIN))
+        tau = 1e-6 + (1 - 1e-6) * torch.rand(len(Z), device=DEVICE)  # keep tau above zero for numerical stability
+        sigma_tau = SIGMA_MIN * torch.exp(tau * np.log(SIGMA_MAX / SIGMA_MIN))  #'exploding variance' noise scheme
         E = torch.randn_like(Z)
         X_tau = Z + sigma_tau[:, None] * E
         score = model(X_tau, sigma_tau, condition)

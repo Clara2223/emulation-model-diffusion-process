@@ -3,21 +3,47 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 
-from potentials import compute_potential
+from .potentials import compute_potential
 
-DATA = "train_data/3D_double_well_adjusted_1e8steps_0e0burn_20261030_1446.npz"
+#DATA = "train_data/3D_double_well_adjusted_1e8steps_0e0burn_20261030_1446.npz"
+DATA='/Users/clarawimmelmann/Desktop/Energy_specialCourse/init_problem/MD/train_data/3D_double_well_adjusted_1e8steps_0e0burn_20261102_0733.npz'
+MAX_PLOT_POINTS = 100_000
 
-
-
-def plot_simulation(data_path: Path, output_plot_path: Path = None):
+def plot_simulation(
+    data_path: Path,
+    output_plot_path: Path = None,
+    trajectory_ids: list[int] | None = None,
+):
     archive = np.load(data_path)
     positions = archive["positions"]  # Shape: (n_trajectories, n_saved, dim)
     all_energies = archive["energy"]
     potential_type = str(archive["potential_type"])
     well_amplitude = float(archive["well_amplitude"])
 
-    n_trajectories = positions.shape[0]
-    spatial_positions = positions[..., :2]
+    total_trajectories = positions.shape[0]
+    if trajectory_ids is None:
+        selected_indices = np.arange(total_trajectories)
+    else:
+        if not trajectory_ids:
+            raise ValueError("trajectory_ids must contain at least one trajectory ID")
+        if len(set(trajectory_ids)) != len(trajectory_ids):
+            raise ValueError("trajectory_ids must not contain duplicates")
+        invalid_ids = [
+            trajectory_id
+            for trajectory_id in trajectory_ids
+            if trajectory_id < 1 or trajectory_id > total_trajectories
+        ]
+        if invalid_ids:
+            raise ValueError(
+                f"Trajectory IDs must be between 1 and {total_trajectories}; "
+                f"got {invalid_ids}"
+            )
+        selected_indices = np.asarray(trajectory_ids) - 1
+
+    selected_ids = selected_indices + 1
+    n_trajectories = len(selected_indices)
+    spatial_positions = positions[selected_indices, ..., :2]
+    selected_energies = all_energies[selected_indices]
     x_flat = spatial_positions[..., 0].flatten()
     y_flat = spatial_positions[..., 1].flatten()
 
@@ -32,23 +58,33 @@ def plot_simulation(data_path: Path, output_plot_path: Path = None):
     x_grid = np.linspace(x_min, x_max, 200)
     y_grid = np.linspace(-2.0, 2.0, 200)
     X, Y = np.meshgrid(x_grid, y_grid)
-    Z_pot = compute_potential(X, Y, potential_type, well_amplitude, box_length if box_length else 32.0)
+    Z_pot = compute_potential(
+        X, Y, potential_type, period=box_length or 32.0,
+        well_amplitude=well_amplitude,
+    )
 
     contour = ax1.contour(X, Y, Z_pot, levels=12, cmap="Greys", alpha=0.5)
     ax1.clabel(contour, inline=True, fontsize=8)
 
-    if n_trajectories > 1:
+    if n_trajectories > 1 or trajectory_ids is not None:
         colors = plt.cm.viridis(np.linspace(0, 1, n_trajectories))
+        trajectory_stride = max(
+            1, (spatial_positions.shape[1] + MAX_PLOT_POINTS - 1) // MAX_PLOT_POINTS
+        )
         for traj_idx in range(n_trajectories):
             ax1.plot(
-                spatial_positions[traj_idx, :, 0],
-                spatial_positions[traj_idx, :, 1],
+                spatial_positions[traj_idx, ::trajectory_stride, 0],
+                spatial_positions[traj_idx, ::trajectory_stride, 1],
                 color=colors[traj_idx],
                 alpha=0.7,
                 linewidth=0.8,
-                label=f"Traj {traj_idx + 1}" if n_trajectories <= 10 else "",
+                label=f"Traj {selected_ids[traj_idx]}"
+                if n_trajectories <= 10
+                else "",
             )
-        ax1.set_title(f"2D Paths for {n_trajectories} Trajectories over $V(x,y)$")
+        ax1.set_title(
+            f"2D Paths for Trajectories {', '.join(map(str, selected_ids))} over $V(x,y)$"
+        )
         if n_trajectories <= 10:
             ax1.legend(loc="upper right", fontsize=7)
     else:
@@ -61,7 +97,7 @@ def plot_simulation(data_path: Path, output_plot_path: Path = None):
 
     # --- Energy Distribution ---
     ax2 = fig.add_subplot(gs[0, 1])
-    ax2.hist(all_energies.flatten(), bins=40, density=True, color="#6ba2c6", edgecolor="black", alpha=0.75)
+    ax2.hist(selected_energies.flatten(), bins=40, density=True, color="#6ba2c6", edgecolor="black", alpha=0.75)
     ax2.set_title("Boltzmann Energy Distribution")
     ax2.set_xlabel("Potential Energy $U(x, y)$")
     ax2.set_ylabel("Probability Density")
@@ -73,8 +109,8 @@ def plot_simulation(data_path: Path, output_plot_path: Path = None):
     ax3.hist(x_flat, bins=60, density=True, color="teal", alpha=0.6, label="Sample Density $p(x)$")
     x_line = np.linspace(x_min, x_max, 300)
     v_slice = compute_potential(
-        x_line, np.zeros_like(x_line), potential_type, well_amplitude,
-        box_length if box_length else 32.0,
+        x_line, np.zeros_like(x_line), potential_type, period=box_length or 32.0,
+        well_amplitude=well_amplitude,
     )
     ax3_twin.plot(x_line, v_slice, color="black", lw=2, linestyle="--", label="$V(x, 0)$")
     ax3.set_title("Marginal Distribution $p(x)$ & Energy Barrier")
@@ -88,9 +124,24 @@ def plot_simulation(data_path: Path, output_plot_path: Path = None):
     y_traj_single = spatial_positions[0, :, 1]
     steps = np.arange(len(x_traj_single))
     plot_count = max(1, int(0.1 * len(steps)))
+    time_series_stride = max(1, (plot_count + MAX_PLOT_POINTS - 1) // MAX_PLOT_POINTS)
 
-    ax4.plot(steps[:plot_count], x_traj_single[:plot_count], label="x(t)", color="indigo", alpha=0.8, lw=0.8)
-    ax4.plot(steps[:plot_count], y_traj_single[:plot_count], label="y(t)", color="mediumseagreen", alpha=0.6, lw=0.8)
+    ax4.plot(
+        steps[:plot_count:time_series_stride],
+        x_traj_single[:plot_count:time_series_stride],
+        label="x(t)",
+        color="indigo",
+        alpha=0.8,
+        lw=0.8,
+    )
+    ax4.plot(
+        steps[:plot_count:time_series_stride],
+        y_traj_single[:plot_count:time_series_stride],
+        label="y(t)",
+        color="mediumseagreen",
+        alpha=0.6,
+        lw=0.8,
+    )
     
     if potential_type == "chain":
         well_1, well_2 = (-1.0) % box_length, 1.0  # adjust if needed
@@ -99,7 +150,10 @@ def plot_simulation(data_path: Path, output_plot_path: Path = None):
 
     ax4.axhline(well_1, color="gray", linestyle=":", alpha=0.7, label="Well 1 Center")
     ax4.axhline(well_2, color="gray", linestyle=":", alpha=0.7, label="Well 2 Center")
-    ax4.set_title(f"Trajectory Time-Series (First {plot_count} saved frames)")
+    ax4.set_title(
+        f"Trajectory {selected_ids[0]} Time-Series "
+        f"(First {plot_count} saved frames)"
+    )
     ax4.set_xlabel("Saved frames")
     ax4.set_ylabel("Position Coordinates")
     ax4.legend(loc="upper right", fontsize=8)
@@ -113,10 +167,18 @@ def plot_simulation(data_path: Path, output_plot_path: Path = None):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Plot MD simulation archive.")
-    parser.add_argument("--data", type=Path, required=True, help="Path to .npz simulation file")
+    parser = argparse.ArgumentParser(description="Plot MD simulation archive")
+    parser.add_argument("--data", type=Path, default=Path(DATA), help="Path to .npz simulation file")
+    parser.add_argument(
+        "--trajectories",
+        type=int,
+        nargs="+",
+        metavar="ID",
+        help="1-based trajectory IDs to plot (default: all)",
+    )
     args = parser.parse_args()
-    plot_simulation(args.data)
+    plot_simulation(args.data, trajectory_ids=args.trajectories)
+
 
 
 

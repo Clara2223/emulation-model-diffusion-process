@@ -74,10 +74,20 @@ def load_equilibrium_data(path: Path, max_samples: int, seed: int = 7):
     return torch.from_numpy(samples.astype(np.float32, copy=False))
 
 
-def load_equilibrium_bundle(path: Path, max_samples: int, diffusion_frames: int, seed: int = 7):
-    """Read evenly spaced training samples and chronological position references."""
+def load_equilibrium_bundle(
+    path: Path,
+    max_samples: int,
+    diffusion_frames: int,
+    seed: int = 7,
+    trajectory: int = 1,
+):
+    """Read samples and references from one selected trajectory."""
     with np.load(path) as data:
-        positions = _position_trajectories(data["positions"])
+        all_positions = _position_trajectories(data["positions"])
+        if trajectory < 1 or trajectory > len(all_positions):
+            raise ValueError(f"trajectory must be between 1 and {len(all_positions)}")
+        # keep the model on one initial position because it has no trajectory id
+        positions = all_positions[trajectory - 1:trajectory]
         times = data["md_time"]
         if times.ndim != 1 or len(times) != positions.shape[1]:
             raise ValueError("The md_time array must match the saved frame count")

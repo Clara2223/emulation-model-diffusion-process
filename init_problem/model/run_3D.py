@@ -1,7 +1,6 @@
 import argparse
 from datetime import datetime
 from pathlib import Path
-import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
@@ -21,75 +20,45 @@ from .model_3D import (
     train_flow,
 )
 from .model_2D import DEVICE
-from .predict import histogram_distances, log_prediction, plot_training_loss
-
-
-def _save_comparison(reference, generated, reference_time, generated_time, objective, output):
-    fig, axes = plt.subplots(1, 2, figsize=(12, 4), dpi=160, constrained_layout=True)
-    if objective == "joint":
-        for ax, samples, title in (
-            (axes[0], reference, "MD reference"),
-            (axes[1], generated, "Generated joint samples"),
-        ):
-            points = ax.scatter(samples[:, 0], samples[:, 1], c=samples[:, 2], s=3, alpha=0.5)
-            ax.set_xlabel("x")
-            ax.set_ylabel("y")
-            ax.set_title(title)
-        fig.colorbar(points, ax=axes, label="Physical MD time")
-    else:
-        for ax, samples, sample_times, title in (
-            (axes[0], reference, reference_time, "MD reference"),
-            (axes[1], generated, generated_time, "Generated conditional samples"),
-        ):
-            points = ax.scatter(
-                samples[:, 0], samples[:, 1], c=sample_times, s=3, alpha=0.5,
-            )
-            ax.set_xlabel("x")
-            ax.set_ylabel("y")
-            ax.set_title(title)
-        fig.colorbar(points, ax=axes, label="Physical MD time")
-    fig.savefig(output, dpi=160)
-    plt.close(fig)
+from .predict import (
+    histogram_distances,
+    log_prediction,
+    plot_training_loss,
+    plot_trajectory_comparison,
+)
 
 
 #paths
 ### double well
 #DEFAULT_DATA = Path(__file__).resolve().parents[1] /"MD"/ "train_data" / "3D_double_well_1e8steps_5e4burn_20261021_2056.npz"
+#DEFAULT_DATA =Path(__file__).resolve().parents[1] /"MD"/ "train_data" /'3D_double_well_1e8steps_0e0burn_20261101_2142.npz'
 #### chain of wells
-DEFAULT_DATA = Path(__file__).resolve().parents[1] /"MD"/ "train_data" / "3D_chain_1e8steps_5e4burn_20261021_2133.npz"
+#DEFAULT_DATA = Path(__file__).resolve().parents[1] /"MD"/ "train_data" / "3D_chain_1e8steps_5e4burn_20261021_2133.npz"
 ### high barrier double well
-#DEFAULT_DATA = Path(__file__).resolve().parents[1] /"MD"/ "train_data" / "3D_high_barrier_double_well_1e8steps_5e4burn_20261021_time.npz"
-
+DEFAULT_DATA = Path(__file__).resolve().parents[1] /"MD"/ "train_data" / "3D_double_well_adjusted_1e8steps_0e0burn_20261030_1446.npz"
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Train a joint or condition-based 3D trajectory model"
-    )
+    parser = argparse.ArgumentParser(description="Train a joint or condition-based 3D trajectory model")
     parser.add_argument("--data", type=Path)
     parser.add_argument("--period", type=float)
     parser.add_argument("--objective", choices=("joint", "condition"))
     parser.add_argument("--model", choices=("diffusion", "flow"))
+    parser.add_argument(
+        "--trajectory", type=int, help="1-based trajectory to train on (default: 1)",
+    )
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--max-samples", type=int)
     parser.add_argument("--generated-samples", type=int, default=1_000)
     parser.add_argument("--n-levels", type=int)
-    parser.add_argument(
-        "--steps-per-level", type=int,
-        help="Score-based Langevin updates at each noise level (diffusion)",
-    )
-    parser.add_argument(
-        "--ode-steps", type=int,
-        help="Numerical integration steps over the flow transport interval",
-    )
-    parser.add_argument(
-        "--save-checkpoint",
-        action="store_true",
-        help="Save model and optimizer state after training",
-    )
+    parser.add_argument( "--steps-per-level", type=int, help="Score-based Langevin updates at each noise level (diffusion)")
+    parser.add_argument( "--ode-steps", type=int,help="Numerical integration steps over the flow transport interval")
+    parser.add_argument("--save-checkpoint",action="store_true",help="Save model and optimizer state after training")
     parser.add_argument("--resume-checkpoint", type=Path)
     args = parser.parse_args()
     resume_checkpoint = None
     settings = {}
+    
+    # DATA 
     if args.resume_checkpoint is not None:
         resume_checkpoint = load_training_checkpoint(args.resume_checkpoint)
         settings = checkpoint_settings(args.resume_checkpoint, resume_checkpoint)
@@ -98,10 +67,16 @@ def main():
                 args.resume_checkpoint, settings, Path(__file__).resolve().parents[1],
             )
     if args.data is None:
-        parser.error("--data is required unless --resume-checkpoint is used")
+        args.data = DEFAULT_DATA
+        print(f"--data is required unless --resume-checkpoint is used. Using default data: {DEFAULT_DATA}")
     args.period = checkpoint_option(parser, args.period, settings, "period", 32.0)
+    
+    # MODEL AND TRAINING OPTIONS
     args.objective = checkpoint_option(
         parser, args.objective, settings, "objective", "joint",
+    )
+    args.trajectory = checkpoint_option(
+        parser, args.trajectory, settings, "trajectory", 1,
     )
     if args.objective not in {"joint", "condition"}:
         parser.error(f"Unsupported checkpoint objective: {args.objective}")
@@ -109,6 +84,8 @@ def main():
     args.max_samples = checkpoint_option(
         parser, args.max_samples, settings, "max_samples", 100_000, "samples",
     )
+    
+    # SAMPLING PARAMS 
     args.n_levels = checkpoint_option(
         parser, args.n_levels, settings, "n_levels", 12, "noise_levels",
     )
@@ -116,6 +93,8 @@ def main():
         parser, args.steps_per_level, settings, "steps_per_level", 50,
     )
     args.ode_steps = checkpoint_option(parser, args.ode_steps, settings, "ode_steps", 50)
+    
+    # CHECKS 
     if min(args.epochs, args.max_samples, args.generated_samples,
            args.n_levels, args.steps_per_level, args.ode_steps) < 1:
         parser.error("training, sampling, and data-count arguments must be positive")
@@ -123,44 +102,54 @@ def main():
         parser.error("--max-samples must be at least 2 for train/validation splits")
     if args.period <= 0:
         parser.error("--period must be positive")
+    if args.trajectory < 1:
+        parser.error("--trajectory must be at least 1")
+    
     with np.load(args.data) as archive:
         positions = np.asarray(archive["positions"], dtype=np.float32)
         times = np.asarray(archive["md_time"], dtype=np.float32)
         initial_positions = (
             np.asarray(archive["initial_positions"], dtype=np.float32)
-            if "initial_positions" in archive else None
-        )
+            if "initial_positions" in archive else None)
     if positions.ndim == 2:
-        positions = positions[None, ...]
+        positions = positions[None, ...]     #broadcast to (1, n_saved, 2)
+    n_trajectories, n_saved, _ = positions.shape
+    '''
+    # i create the data so i dont need to check this
     if positions.ndim != 3 or positions.shape[2] < 2:
         parser.error("The archive must contain 2D or 3D position samples with x and y columns")
-    n_trajectories, n_saved, _ = positions.shape
+    '''
     if times.ndim != 1 or len(times) != n_saved:
         parser.error("The archive's md_time array must match the saved frame count")
     if n_saved < 3 or not np.isfinite(positions[..., :2]).all() or not np.isfinite(times).all():
         parser.error("The archive needs at least three finite position/time samples")
+    
     if args.objective == "condition":
         if initial_positions is None:
-            parser.error(
-                "The condition objective requires initial_positions; regenerate the archive "
-                "with MD/MD_sim.py"
-            )
-        if (
-            initial_positions.shape != (n_trajectories, 2)
+            parser.error("The condition objective requires initial_positions; regenerate the archive with MD/MD_sim.py")
+        if (initial_positions.shape != (n_trajectories, 2)
             or not np.isfinite(initial_positions).all()
         ):
             parser.error("initial_positions must contain one finite x,y pair per trajectory")
+    if args.trajectory > n_trajectories:
+        parser.error(f"--trajectory must be between 1 and {n_trajectories}")
+
+    # keep training and references tied to the selected trajectory's initial position
+    trajectory_index = args.trajectory - 1
+    positions = positions[trajectory_index:trajectory_index + 1]
+    if initial_positions is not None:
+        initial_positions = initial_positions[trajectory_index:trajectory_index + 1]
+    n_trajectories = 1
+
     potential_type, _, _, _ = get_potential_settings(args.data)
     reference_positions = positions[..., :2].copy()
     if potential_type == "chain":
         reference_positions[..., 0] %= args.period
     rng = np.random.default_rng(7)
-    times_flat = np.broadcast_to(times[None, :], (n_trajectories, n_saved)).reshape(-1)
 
     if args.objective == "joint":
-        reference = np.column_stack(
-            (reference_positions.reshape(-1, 2), times_flat),
-        ).astype(np.float32)
+        # use one trajectory because joint samples have no trajectory id
+        reference = np.column_stack((reference_positions[0], times)).astype(np.float32)
         model_reference = reference.copy()
         if potential_type == "chain":
             model_reference[:, 0] = np.mod(model_reference[:, 0], args.period) / args.period
@@ -181,9 +170,8 @@ def main():
         reference_for_metrics = reference
     else:
         # Emulation objective: conditions = [time, initial_position_x, initial_position_y]
-        init_pos_flat = np.broadcast_to(
-            initial_positions[:, None, :], (n_trajectories, n_saved, 2),
-        ).reshape(-1, 2)
+        times_flat = np.broadcast_to(times[None, :], (n_trajectories, n_saved)).reshape(-1)
+        init_pos_flat = np.broadcast_to(initial_positions[:, None, :], (n_trajectories, n_saved, 2)).reshape(-1, 2)
         condition_raw = np.column_stack((times_flat, init_pos_flat)).astype(np.float32)
         target_raw = reference_positions.reshape(-1, 2).astype(np.float32)
 
@@ -249,6 +237,10 @@ def main():
             "target_std": torch.as_tensor(target_std, dtype=torch.float32),
         }
     )
+    
+    
+    
+    # LOGS
     total_epochs = args.epochs + len(
         resume_checkpoint.get("training_history", []) if resume_checkpoint else []
     )
@@ -256,6 +248,7 @@ def main():
         "model": args.model,
         "objective": args.objective,
         "data": str(args.data),
+        "trajectory": args.trajectory,
         "epochs": total_epochs,
         "max_samples": args.max_samples,
         "potential_type": potential_type,
@@ -273,7 +266,7 @@ def main():
         else f"{args.ode_steps}ODESteps"
     )
     run_name = (
-        f"{args.data.stem}_{args.model}_{args.objective}_{total_epochs}epochs_"
+        f"{args.data.stem}_{args.model}_{args.objective}_traj{args.trajectory}_{total_epochs}epochs_"
         f"{args.max_samples}samples_{sampler_name}_{datetime.now():%Y%m%d_%H%M%S}"
     )
     output_dir = Path(__file__).resolve().parents[1] / "predictions"
@@ -281,6 +274,8 @@ def main():
         output_dir / f"{run_name}_checkpoint.pt" if args.save_checkpoint else None
     )
 
+
+    # TRAINING actually 
     validation = (val_states, val_conditions)
     if args.model == "diffusion":
         model = Diffusion3D(model_state_dim, condition_dim).to(DEVICE)
@@ -333,7 +328,7 @@ def main():
             generated[:, 0] = np.mod(generated[:, 0], 1.0) * args.period
         generated_for_metrics = generated
         generated_time = generated[:, 2]
-        reference_time = times_flat
+        reference_time = times
     else:
         sample_indices = rng.choice(
             len(train_condition_raw_all), size=args.generated_samples, replace=True,
@@ -373,7 +368,7 @@ def main():
     output = output_dir / f"{run_name}_samples.png"
     loss_output = output_dir / f"{run_name}_loss.png"
     data_output = output_dir / f"{run_name}_generated.npz"
-    _save_comparison(
+    plot_trajectory_comparison(
         reference if args.objective == "joint" else reference_positions.reshape(-1, 2),
         generated,
         reference_time,
