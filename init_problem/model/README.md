@@ -14,13 +14,41 @@ The top-level script is a launcher. Everything used by the model is in this fold
 - `train.py`: trains the 2D models and records their losses.
 - `predict.py`: generates samples, calculates diagnostics, and makes plots.
 - `run.py`: connects the files and runs the experiment.
-- `run_3D.py`: runs the 3D joint-sample and condition-based emulation experiments.
+- `run_3D.py`: runs the 3D joint-sample and conditional emulation experiments.
 
 Both models learn the 2D equilibrium distribution of positions `(x, y)` only. Neither receives physical MD time, velocity, or energy. Diffusion also receives its noise level and predicts a score; flow receives its internal transport coordinate and predicts a velocity. These internal coordinates are part of the generative algorithms, not physical trajectory time. Both use the same plots and diagnostics, so no separate prediction script is needed. Generated samples are saved in `init_problem/predictions/`.
 
 All model paths use the shared `DEVICE` selected in `model_2D.py`. Training uses direct PyTorch optimizer loops on that device. The 2D runner keeps its dataset CPU-backed and moves each batch to the selected device; the 3D runner creates state and condition tensors as `float32` on that device. NumPy-backed loading uses `torch.from_numpy` where CPU storage is intentional.
 
-Prediction figures overlay MD and generated position densities and potential-energy distributions. The generated-data legend identifies the selected model as either diffusion or flow.
+The 2D prediction-results figure uses a 3-by-2 layout: the training MD count
+heatmap over the potential and the existing MD-vs-generated density comparison
+are on the first row; the potential-energy distributions and x-position
+marginal/potential profile are on the second; the learned score (diffusion) or
+velocity (flow) field and the selected training trajectory versus physical MD
+time are on the third. The generated-data legend identifies the selected model
+as either diffusion or flow.
+
+When replotting a 2D checkpoint, `--stop-time` limits the final trajectory panel
+to that physical MD time; it defaults to the end of the data archive. For
+example, from `init_problem`:
+
+```bash
+python -m model.predict --checkpoint predictions/path_to_checkpoint.pt --plot results --stop-time 10
+```
+
+Checkpoint loss plots overlay training and validation loss by default. Choose a
+single curve with `--loss-curves training` or `--loss-curves validation`, or
+keep both with `--loss-curves both`:
+
+```bash
+python -m model.predict --checkpoint predictions/path_to_checkpoint.pt --plot loss --loss-curves validation
+```
+
+The MD plot uses six panels, including an all-sample count heatmap, selected
+trajectory paths, and split time-series views. Existing MD archives only store
+samples from burn-in onward, so their pre-burn-in panel explicitly reports that
+the requested samples are unavailable; the later panel uses the archive's full
+saved `md_time` interval.
 
 The plotted potential is read from the dataset metadata. Older archives without this metadata are identified from their filename (`chain` or `double_well`); unrecognized names raise an error instead of silently plotting the wrong potential. H-barrier plots use the saved ridge amplitude and width.
 
@@ -36,12 +64,15 @@ The separate 3D runner reads archives with `positions` and `md_time` arrays. For
 the condition objective, the archive must also include `initial_positions` (the
 MD simulator writes it):
 
+Run the 3D commands from the repository root:
+
 ```bash
-python -m model.run_3D --data path/to/3D_archive.npz --objective joint
-python -m model.run_3D --data path/to/archive_with_initial_positions.npz --objective condition --model flow
+python -m init_problem.model.run_3D --data path/to/3D_archive.npz --objective joint
+python -m init_problem.model.run_3D --data path/to/archive_with_initial_positions.npz --objective condition --model flow
+python -m init_problem.model.run_3D --data path/to/archive_with_initial_positions.npz --objective AdaLN
 ```
 
-`--objective joint` trains diffusion or flow on `(x, y, physical MD time)` samples and learns their joint distribution, not temporal order. `--objective condition` learns position snapshots `(x, y)` conditioned on physical MD time and that trajectory's initial `(x, y)` position. It generates snapshots for sampled time/initial-position conditions; it does not roll generated states forward as a transition model. Generated arrays, a comparison figure, and training loss are saved separately. Non-chain 2D behavior remains unchanged.
+`--objective joint` trains diffusion or flow on `(x, y, physical MD time)` samples and learns their joint distribution, not temporal order. `--objective condition` learns position snapshots `(x, y)` conditioned on physical MD time and each trajectory's initial `(x, y)` position by concatenating conditions at the network input. `--objective AdaLN` uses those same conditions to scale and shift normalized hidden features at each layer. Both conditional objectives use all trajectories by default; pass one or more 1-based trajectory numbers with `--trajectory` to select a subset, for example `--trajectory 1 2 3`. The joint objective uses one trajectory. Conditional models generate snapshots for sampled time/initial-position conditions; they do not roll generated states forward as transition models. Generated arrays, a comparison figure, and training loss are saved separately. Non-chain 2D behavior remains unchanged.
 
 Generate a double-well trajectory with an automatically adjusted Gaussian-well depth:
 
@@ -70,7 +101,32 @@ Resume training by passing the checkpoint to either runner:
 
 ```bash
 python -m model.run --resume-checkpoint path/to/checkpoint.pt --epochs 100 --save-checkpoint
-python -m model.run_3D --resume-checkpoint path/to/checkpoint.pt --epochs 100 --save-checkpoint
+python -m init_problem.model.run_3D --resume-checkpoint path/to/checkpoint.pt --epochs 100 --save-checkpoint
+```
+
+The 3D prediction comparison uses a 3-by-3 layout. (0,0) shows generated samples
+at an early physical MD time over the potential surface; (0,1) shows generated
+samples at a late physical MD time. (0,2) shows all generated samples colored
+by their physical-time conditions, without a legend.
+The second row contains the reference/generated potential-energy distributions,
+x-position histograms with the potential profile, and the learned
+score/velocity field. The bottom row shows generated x and y positions versus
+physical MD time separately, with the final panel showing the field at a
+second time using the same vector scale as the first field panel.
+
+Use `--early-time` and `--late-time` to select the fixed conditions in [0,0]
+and [0,1] (defaults: first and last saved MD times). Conditional checkpoints
+generate `--time-slice-samples` samples at each selected time. Joint checkpoints
+select generated samples nearest the requested times. The x-time panel [2,0]
+uses one marker color and no colorbar. The field in [1,2] is evaluated
+at `--field-time` (default: the first saved MD time); [2,2] uses
+`--field-time-secondary` (default: the middle saved time). Both field panels
+show the generated initial position in their legend and share a vector scale
+to make their time-dependent fields comparable. Plot only the first field panel,
+without generating prediction samples, using `--plot field`:
+
+```bash
+python -m model.predict --checkpoint predictions/path_to_checkpoint.pt --plot field --field-time 100
 ```
 
 The checkpoint supplies the original data path and model/training settings; `--epochs`

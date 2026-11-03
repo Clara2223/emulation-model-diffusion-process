@@ -121,6 +121,8 @@ def main():
         args.data, args.max_samples, args.diffusion_frames,
         trajectory=args.trajectory,
     )
+    with np.load(args.data) as data_archive:
+        plot_md_time = np.asarray(data_archive["md_time"], dtype=np.float64)
     if train_data.ndim != 2 or train_data.shape[1] < 2:
         parser.error("The data archive must contain positions with x and y columns")
     train_data = train_data[:, :2]
@@ -239,6 +241,10 @@ def main():
         well_amplitude=well_amplitude,
         show=args.show,
         period=args.period,
+        model=model,
+        mean=mean,
+        std=std,
+        md_time=plot_md_time,
     )
     plot_training_loss(
         loss_history, loss_output, validation_losses=validation_loss_history, show=args.show,

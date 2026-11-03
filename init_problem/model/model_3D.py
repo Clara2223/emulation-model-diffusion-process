@@ -7,6 +7,19 @@ from .checkpoint import save_training_checkpoint
 from .model_2D import DEVICE, SIGMA_MAX, SIGMA_MIN
 
 
+class _AdaLN(nn.Module):
+    def __init__(self, hidden_dim, condition_dim):
+        super().__init__()
+        if condition_dim < 1:
+            raise ValueError("AdaLN requires at least one condition feature")
+        self.norm = nn.LayerNorm(hidden_dim)
+        self.modulation = nn.Linear(condition_dim, 2 * hidden_dim)
+
+    def forward(self, features, condition):
+        scale, shift = self.modulation(condition).chunk(2, dim=1)
+        return self.norm(features) * (1 + scale) + shift
+
+
 class Diffusion3D(nn.Module):
     """Noise-conditioned score model for 3D samples or conditional transitions"""
 
@@ -16,39 +29,58 @@ class Diffusion3D(nn.Module):
         condition_dim=0,
         hidden_dim=64,
         embedding_dim=16,
+        adaln=False,
     ):
         super().__init__()
         self.state_dim = state_dim
         self.condition_dim = condition_dim
+        self.adaln = adaln
         frequencies = torch.exp(torch.linspace(np.log(1.0), np.log(1000.0), embedding_dim // 2))
         self.register_buffer("frequencies", frequencies)
-        self.net = nn.Sequential(
-            nn.Linear(
-                state_dim + condition_dim + embedding_dim,
-                hidden_dim,
-            ),
-            nn.SiLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.SiLU(),
-            nn.Linear(hidden_dim, state_dim),
-        )
+        if adaln:
+            self.input = nn.Linear(state_dim + embedding_dim, hidden_dim)
+            self.hidden = nn.Linear(hidden_dim, hidden_dim)
+            self.adaln_layers = nn.ModuleList(
+                [_AdaLN(hidden_dim, condition_dim) for _ in range(2)]
+            )
+            self.output = nn.Linear(hidden_dim, state_dim)
+        else:
+            self.net = nn.Sequential(
+                nn.Linear(
+                    state_dim + condition_dim + embedding_dim,
+                    hidden_dim,
+                ),
+                nn.SiLU(),
+                nn.Linear(hidden_dim, hidden_dim),
+                nn.SiLU(),
+                nn.Linear(hidden_dim, state_dim),
+            )
 
     def forward(self, X_tau, sigma_tau, condition=None):
         log_sigma = torch.log(sigma_tau.clamp_min(1e-6)).unsqueeze(1)
         angles = log_sigma * self.frequencies.unsqueeze(0)
         features = [X_tau]
-        
+
         if self.condition_dim:
-            
             if condition is None or condition.shape[1] != self.condition_dim:
                 raise ValueError(f"Expected a condition with {self.condition_dim} features")
-            
-            features.append(condition)
-        
+
+            if not self.adaln:
+                features.append(condition)
+
         #fourier noise features 
         features.append(torch.cat((torch.sin(angles), torch.cos(angles)), dim=1))
-        
-        return self.net(torch.cat(features, dim=1))
+        features = torch.cat(features, dim=1)
+        if not self.adaln:
+            return self.net(features)
+
+        hidden = torch.nn.functional.silu(
+            self.adaln_layers[0](self.input(features), condition)
+        )
+        hidden = torch.nn.functional.silu(
+            self.adaln_layers[1](self.hidden(hidden), condition)
+        )
+        return self.output(hidden)
 
 
 class Flow3D(nn.Module):
@@ -59,28 +91,49 @@ class Flow3D(nn.Module):
         state_dim=3,
         condition_dim=0,
         hidden_dim=64,
+        adaln=False,
     ):
         super().__init__()
         self.state_dim = state_dim
         self.condition_dim = condition_dim
-        self.net = nn.Sequential(
-            nn.Linear(
-                state_dim + condition_dim + 1,
-                hidden_dim,
-            ),
-            nn.SiLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.SiLU(),
-            nn.Linear(hidden_dim, state_dim),
-        )
+        self.adaln = adaln
+        if adaln:
+            self.input = nn.Linear(state_dim + 1, hidden_dim)
+            self.hidden = nn.Linear(hidden_dim, hidden_dim)
+            self.adaln_layers = nn.ModuleList(
+                [_AdaLN(hidden_dim, condition_dim) for _ in range(2)]
+            )
+            self.output = nn.Linear(hidden_dim, state_dim)
+        else:
+            self.net = nn.Sequential(
+                nn.Linear(
+                    state_dim + condition_dim + 1,
+                    hidden_dim,
+                ),
+                nn.SiLU(),
+                nn.Linear(hidden_dim, hidden_dim),
+                nn.SiLU(),
+                nn.Linear(hidden_dim, state_dim),
+            )
 
     def forward(self, X_tau, tau, condition=None):
         features = [X_tau, tau[:, None]]
         if self.condition_dim:
             if condition is None or condition.shape[1] != self.condition_dim:
                 raise ValueError(f"Expected a condition with {self.condition_dim} features")
-            features.append(condition)
-        return self.net(torch.cat(features, dim=1))
+            if not self.adaln:
+                features.append(condition)
+        features = torch.cat(features, dim=1)
+        if not self.adaln:
+            return self.net(features)
+
+        hidden = torch.nn.functional.silu(
+            self.adaln_layers[0](self.input(features), condition)
+        )
+        hidden = torch.nn.functional.silu(
+            self.adaln_layers[1](self.hidden(hidden), condition)
+        )
+        return self.output(hidden)
 
 
 #   TRAINING LOOP

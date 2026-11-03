@@ -30,21 +30,32 @@ from .predict import (
 
 #paths
 ### double well
-#DEFAULT_DATA = Path(__file__).resolve().parents[1] /"MD"/ "train_data" / "3D_double_well_1e8steps_5e4burn_20261021_2056.npz"
+    #DEFAULT_DATA = Path(__file__).resolve().parents[1] /"MD"/ "train_data" / "3D_double_well_1e8steps_5e4burn_20261021_2056.npz"
 #DEFAULT_DATA =Path(__file__).resolve().parents[1] /"MD"/ "train_data" /'3D_double_well_1e8steps_0e0burn_20261101_2142.npz'
+
 #### chain of wells
-#DEFAULT_DATA = Path(__file__).resolve().parents[1] /"MD"/ "train_data" / "3D_chain_1e8steps_5e4burn_20261021_2133.npz"
+    #DEFAULT_DATA = Path(__file__).resolve().parents[1] /"MD"/ "train_data" / "3D_chain_1e8steps_5e4burn_20261021_2133.npz"
+#DEFAULT_DATA = Path(__file__).resolve().parents[1] /"MD"/ "train_data" / '3D_chain_1e8steps_0e0burn_20261102_1739.npz'
+DEFAULT_DATA = Path(__file__).resolve().parents[1] /"MD"/ "train_data" / "3D_double_well_adjusted_1e8steps_0e0burn_20261103_1649_4trans.npz"
+
+
 ### high barrier double well
-DEFAULT_DATA = Path(__file__).resolve().parents[1] /"MD"/ "train_data" / "3D_double_well_adjusted_1e8steps_0e0burn_20261030_1446.npz"
+    #DEFAULT_DATA = Path(__file__).resolve().parents[1] /"MD"/ "train_data" / "3D_double_well_adjusted_1e8steps_0e0burn_20261030_1446.npz"
+#DEFAULT_DATA = Path(__file__).resolve().parents[1] /"MD"/ "train_data" / '3D_double_well_adjusted_1e8steps_0e0burn_20261102_0733.npz'
+
+
 
 def main():
-    parser = argparse.ArgumentParser(description="Train a joint or condition-based 3D trajectory model")
+    parser = argparse.ArgumentParser(
+        description="Train a joint, condition-based, or AdaLN 3D trajectory model",
+    )
     parser.add_argument("--data", type=Path)
     parser.add_argument("--period", type=float)
-    parser.add_argument("--objective", choices=("joint", "condition"))
+    parser.add_argument("--objective", choices=("joint", "condition", "AdaLN"))
     parser.add_argument("--model", choices=("diffusion", "flow"))
     parser.add_argument(
-        "--trajectory", type=int, help="1-based trajectory to train on (default: 1)",
+        "--trajectory", type=int, nargs="+",
+        help="1-based trajectories to train on (default: all for conditional objectives, 1 for joint)",
     )
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--max-samples", type=int)
@@ -75,11 +86,28 @@ def main():
     args.objective = checkpoint_option(
         parser, args.objective, settings, "objective", "joint",
     )
-    args.trajectory = checkpoint_option(
-        parser, args.trajectory, settings, "trajectory", 1,
-    )
-    if args.objective not in {"joint", "condition"}:
+    if args.objective not in {"joint", "condition", "AdaLN"}:
         parser.error(f"Unsupported checkpoint objective: {args.objective}")
+    saved_trajectories = settings.get("trajectory")
+    if args.trajectory is None:
+        if saved_trajectories is not None:
+            args.trajectory = (
+                [saved_trajectories]
+                if isinstance(saved_trajectories, int)
+                else list(saved_trajectories)
+            )
+        else:
+            args.trajectory = None if args.objective in {"condition", "AdaLN"} else [1]
+    elif saved_trajectories is not None:
+        saved_trajectories = (
+            [saved_trajectories]
+            if isinstance(saved_trajectories, int)
+            else list(saved_trajectories)
+        )
+        if args.trajectory != saved_trajectories:
+            parser.error(
+                f"--trajectory must match the resumed checkpoint ({saved_trajectories})"
+            )
     args.model = checkpoint_option(parser, args.model, settings, "model", "diffusion")
     args.max_samples = checkpoint_option(
         parser, args.max_samples, settings, "max_samples", 100_000, "samples",
@@ -87,10 +115,10 @@ def main():
     
     # SAMPLING PARAMS 
     args.n_levels = checkpoint_option(
-        parser, args.n_levels, settings, "n_levels", 12, "noise_levels",
+        parser, args.n_levels, settings, "n_levels", 20, "noise_levels",
     )
     args.steps_per_level = checkpoint_option(
-        parser, args.steps_per_level, settings, "steps_per_level", 50,
+        parser, args.steps_per_level, settings, "steps_per_level", 100,
     )
     args.ode_steps = checkpoint_option(parser, args.ode_steps, settings, "ode_steps", 50)
     
@@ -102,8 +130,11 @@ def main():
         parser.error("--max-samples must be at least 2 for train/validation splits")
     if args.period <= 0:
         parser.error("--period must be positive")
-    if args.trajectory < 1:
-        parser.error("--trajectory must be at least 1")
+    if args.trajectory is not None and (
+        any(trajectory < 1 for trajectory in args.trajectory)
+        or len(set(args.trajectory)) != len(args.trajectory)
+    ):
+        parser.error("--trajectory values must be unique positive integers")
     
     with np.load(args.data) as archive:
         positions = np.asarray(archive["positions"], dtype=np.float32)
@@ -124,24 +155,31 @@ def main():
     if n_saved < 3 or not np.isfinite(positions[..., :2]).all() or not np.isfinite(times).all():
         parser.error("The archive needs at least three finite position/time samples")
     
-    if args.objective == "condition":
+    if args.objective in {"condition", "AdaLN"}:
         if initial_positions is None:
-            parser.error("The condition objective requires initial_positions; regenerate the archive with MD/MD_sim.py")
+            parser.error("The condition and AdaLN objectives require initial_positions; regenerate the archive with MD/MD_sim.py")
         if (initial_positions.shape != (n_trajectories, 2)
             or not np.isfinite(initial_positions).all()
         ):
             parser.error("initial_positions must contain one finite x,y pair per trajectory")
-    if args.trajectory > n_trajectories:
-        parser.error(f"--trajectory must be between 1 and {n_trajectories}")
-
-    # keep training and references tied to the selected trajectory's initial position
-    trajectory_index = args.trajectory - 1
-    positions = positions[trajectory_index:trajectory_index + 1]
+    if args.trajectory is None:
+        args.trajectory = list(range(1, n_trajectories + 1))
+    if any(trajectory > n_trajectories for trajectory in args.trajectory):
+        parser.error(f"--trajectory values must be between 1 and {n_trajectories}")
+    if args.objective == "joint" and len(args.trajectory) != 1:
+        parser.error("The joint objective supports one trajectory; select one with --trajectory")
+    trajectory_indices = np.asarray(args.trajectory, dtype=np.int64) - 1
+    positions = positions[trajectory_indices]
     if initial_positions is not None:
-        initial_positions = initial_positions[trajectory_index:trajectory_index + 1]
-    n_trajectories = 1
+        initial_positions = initial_positions[trajectory_indices]
+    n_trajectories = len(trajectory_indices)
 
-    potential_type, _, _, _ = get_potential_settings(args.data)
+    (
+        potential_type,
+        barrier_amplitude,
+        barrier_width,
+        well_amplitude,
+    ) = get_potential_settings(args.data)
     reference_positions = positions[..., :2].copy()
     if potential_type == "chain":
         reference_positions[..., 0] %= args.period
@@ -251,6 +289,7 @@ def main():
         "trajectory": args.trajectory,
         "epochs": total_epochs,
         "max_samples": args.max_samples,
+        "generated_samples": args.generated_samples,
         "potential_type": potential_type,
         "period": args.period,
         "state_dim": model_state_dim,
@@ -266,7 +305,7 @@ def main():
         else f"{args.ode_steps}ODESteps"
     )
     run_name = (
-        f"{args.data.stem}_{args.model}_{args.objective}_traj{args.trajectory}_{total_epochs}epochs_"
+        f"{args.data.stem}_{args.model}_{args.objective}_traj{'-'.join(map(str, args.trajectory))}_{total_epochs}epochs_"
         f"{args.max_samples}samples_{sampler_name}_{datetime.now():%Y%m%d_%H%M%S}"
     )
     output_dir = Path(__file__).resolve().parents[1] / "predictions"
@@ -278,7 +317,9 @@ def main():
     # TRAINING actually 
     validation = (val_states, val_conditions)
     if args.model == "diffusion":
-        model = Diffusion3D(model_state_dim, condition_dim).to(DEVICE)
+        model = Diffusion3D(
+            model_state_dim, condition_dim, adaln=args.objective == "AdaLN",
+        ).to(DEVICE)
         model, loss_history, validation_history = train_diffusion(
             model,
             train_states,
@@ -293,7 +334,9 @@ def main():
         model_version = f"xy_t_diffusion_{args.objective}_v1"
         sampling_config = f"noise_levels={args.n_levels};steps_per_level={args.steps_per_level}"
     else:
-        model = Flow3D(model_state_dim, condition_dim).to(DEVICE)
+        model = Flow3D(
+            model_state_dim, condition_dim, adaln=args.objective == "AdaLN",
+        ).to(DEVICE)
         model, loss_history, validation_history = train_flow(
             model,
             train_states,
@@ -375,6 +418,31 @@ def main():
         generated_time,
         args.objective,
         output,
+        trajectory_positions=reference_positions,
+        trajectory_times=times,
+        trajectory_count=len(positions),
+        model=model,
+        model_type=args.model,
+        field_config={
+            "state_dim": model_state_dim,
+            "condition_dim": condition_dim,
+            "state_mean": target_mean if args.objective != "joint" else mean.cpu().numpy(),
+            "state_std": target_std if args.objective != "joint" else std.cpu().numpy(),
+            **(
+                {
+                    "condition_mean": condition_mean,
+                    "condition_std": condition_std,
+                }
+                if args.objective != "joint"
+                else {}
+            ),
+        },
+        potential_type=potential_type,
+        barrier_amplitude=barrier_amplitude,
+        barrier_width=barrier_width,
+        period=args.period,
+        well_amplitude=well_amplitude,
+        training_positions=reference_positions,
     )
     plot_training_loss(loss_history, loss_output, validation_history)
     np.savez_compressed(
